@@ -326,12 +326,13 @@ class Resync:
         self._field_state = FieldState(sysparams)
         self.eq_pulselen = self._vsync_serration.getEQpulselen()
         self.linelen = self._vsync_serration.get_line_len()
-        self.use_serration = True
+        self.use_serration = False
         # This should be enough to cover all "long" pulses,
         # longest variant being ones where all of vsync is just one long pulse.
         self._long_pulse_max = self.linelen * 5
         # Last half-way point between blank/sync we used when looking for pulses.
-        self._last_pulse_threshold = findpulses_range(
+        # findpulses_range returns (pulse_hz_min, pulse_hz_max), we only need the max (threshold).
+        _, self._last_pulse_threshold = findpulses_range(
             sysparams_const, sysparams_const.vsync_hz
         )
 
