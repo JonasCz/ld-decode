@@ -64,6 +64,7 @@ class VsyncSerration:
         self._divisor = divisor
         self.show_decoded = show_decoded_serration
         self.samp_rate = fs / self._divisor
+        self.hz_ire = sysparams["hz_ire"]  # Hz per IRE for amplitude validation
         fv = sysparams["FPS"] * 2
         fh = sysparams["FPS"] * sysparams["frame_lines"]
 
@@ -286,8 +287,19 @@ class VsyncSerration:
             # validates it by time length, (original version 17e3 and 23e3)
             # now calculated at initialization
             if self.vbi_time_range[0] < len(serration) < self.vbi_time_range[1]:
-                self.found_serration = True
-                self.push_levels(VsyncSerration._get_serration_sync_levels(serration))
+                sync_level, blank_level = VsyncSerration._get_serration_sync_levels(serration)
+                # Validate amplitude: sync should be significantly below blank
+                # Normal sync is ~40 IRE below blank, require at least 20 IRE (~140kHz for PAL VHS)
+                min_amplitude = self.hz_ire * 20  # 20 IRE minimum sync-to-blank difference
+                amplitude = blank_level - sync_level
+                if amplitude >= min_amplitude:
+                    self.found_serration = True
+                    self.push_levels((sync_level, blank_level))
+                else:
+                    ldd.logger.debug(
+                        f"Serration amplitude too small ({amplitude:.0f} Hz, need {min_amplitude:.0f}), rejecting"
+                    )
+                    return False, None, None
 
                 if self.show_decoded:
                     sync, blank = self.pull_levels()

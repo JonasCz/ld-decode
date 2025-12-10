@@ -331,7 +331,7 @@ class Resync:
         # longest variant being ones where all of vsync is just one long pulse.
         self._long_pulse_max = self.linelen * 5
         # Last half-way point between blank/sync we used when looking for pulses.
-        self._last_pulse_threshold = findpulses_range(
+        _, self._last_pulse_threshold = findpulses_range(
             sysparams_const, sysparams_const.vsync_hz
         )
 
@@ -715,13 +715,16 @@ class Resync:
         # self._temp_c += 1
 
         # if it has levels, then compensate blanking bias
+        levels_source = "none"
         if self._vsync_serration.has_levels() or self._field_state.has_levels():
             if self._vsync_serration.has_levels():
                 new_sync, new_blank = self._vsync_serration.pull_levels()
                 if self.level_check(sp, new_sync, new_blank, sync_reference):
                     sync, blank = new_sync, new_blank
+                    levels_source = "vsync_serration"
                 elif self._field_state.has_levels():
                     sync, blank = self._field_state.pull_levels()
+                    levels_source = "field_state (serration check failed)"
                     ldd.logger.debug(
                         "Level check failed on serration measured levels [new_sync: %s, new_blank: %s], falling back to levels from FieldState [sync %s, blank %s].",
                         new_sync,
@@ -735,11 +738,21 @@ class Resync:
                     ldd.logger.debug(
                         "Level check failed on serration measured levels, using defaults."
                     )
-
+                    levels_source = "defaults (serration check failed, no field_state)"
                     sync = sp.ire0
                     blank = sp.vsync_hz
             else:
                 sync, blank = self._field_state.pull_levels()
+                levels_source = "field_state"
+                # Sanity check: sync must be below blank by at least 20 IRE
+                min_amplitude = sp.hz_ire * 20
+                if blank - sync < min_amplitude:
+                    ldd.logger.debug(
+                        f"Field state sync level invalid ({hztoire(sp, sync):.1f} IRE), using defaults"
+                    )
+                    levels_source = "defaults (field_state amplitude invalid)"
+                    sync = sp.vsync_hz
+                    blank = sp.ire0
 
             if self._sysparams_consistency_checks(field):
                 field.rf.SysParams["ire0"] = blank
@@ -757,6 +770,9 @@ class Resync:
             # pass one using standard levels (fallback sync logic)
             # pulse_hz range:  vsync_ire - 10, maximum is the 50% crossing point to sync
             pulse_hz_min, pulse_hz_max = findpulses_range(sp, sp.vsync_hz)
+            levels_source = "default (no levels)"
+            sync = sp.vsync_hz
+            blank = sp.ire0
 
             # checks if the DC offset is abnormal before correcting it
             new_sync = self._vsync_serration.mean_bias()
@@ -772,6 +788,22 @@ class Resync:
                 field.data["video"]["demod_05"] = sync_reference - new_sync + vsync_hz
                 field.data["video"]["demod"] = demod_data - new_sync + vsync_hz
 
+        # Debug: track threshold changes
+        old_threshold = self._last_pulse_threshold
         self._last_pulse_threshold = pulse_hz_max
+        
+        # Calculate IRE values for easier interpretation
+        sync_ire = hztoire(sp, sync)
+        blank_ire = hztoire(sp, blank)
+        threshold_ire = hztoire(sp, pulse_hz_max)
+        
+        # Print if threshold changed significantly or is abnormal
+        threshold_change = abs(pulse_hz_max - old_threshold)
+        # Normal threshold should be around -20 IRE (midpoint of -40 sync and 0 blank)
+        if threshold_change > 10000 or threshold_ire > -10:
+            print(f"  !!! THRESHOLD DEBUG: source={levels_source}")
+            print(f"      sync={sync:.0f} ({sync_ire:.1f} IRE), blank={blank:.0f} ({blank_ire:.1f} IRE)")
+            print(f"      pulse_hz_max={pulse_hz_max:.0f} ({threshold_ire:.1f} IRE)")
+            print(f"      old_threshold={old_threshold:.0f}, change={threshold_change:.0f}")
 
         return self.findpulses(field.data["video"]["demod_05"], pulse_hz_max)

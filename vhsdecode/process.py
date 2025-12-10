@@ -512,6 +512,9 @@ class VHSDecode(ldd.LDdecode):
                         else:
                             redo = self.fdoffset - offset
 
+                            print(f"!!! AGC updating DecoderParams: ire0 {self.rf.DecoderParams['ire0']:.1f} -> {ire0_hz:.1f}, "
+                                  f"hz_ire {self.rf.DecoderParams['hz_ire']:.1f} -> {hz_ire:.1f}, "
+                                  f"vsync_ire {self.rf.DecoderParams['vsync_ire']:.1f} -> {vsync_ire:.1f}")
                             self.rf.DecoderParams["ire0"] = ire0_hz
                             # Note that vsync_ire is a negative number, so (sync_hz - ire0_hz) is correct
                             self.rf.DecoderParams["hz_ire"] = hz_ire
