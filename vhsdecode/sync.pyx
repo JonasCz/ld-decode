@@ -987,8 +987,18 @@ def valid_pulses_to_linelocs(
 cdef inline double round_nearest_line_loc(double line_number) nogil:
     return round(0.5 * round(line_number / 0.5) * 10) / 10.0
 
+# Debug reason codes for refine_linelocs_hsync
+DEF DBG_VSYNC_SKIP = 1
+DEF DBG_NO_ZC = 2
+DEF DBG_PCT_LEFT_OUT_OF_RANGE = 3
+DEF DBG_ZC2_FAIL = 4
+DEF DBG_REFINED_LEFT = 5
+DEF DBG_REFINED_RIGHT = 6
+DEF DBG_RIGHT_PCT_OUT_OF_RANGE = 7
+DEF DBG_RIGHT_ZC2_FAIL = 8
+
 @cython.boundscheck(False)
-def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_threshold):
+def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_threshold, bint debug=False):
     """Refine the line start locations using horizontal sync data."""
 
     # Original used a copy here which resulted in a list.
@@ -1022,11 +1032,28 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
     cdef double pct1_right
     cdef double pct99_right
 
+    # Debug arrays - collect data during nogil, print after
+    cdef Py_ssize_t num_lines = len(linelocs_original)
+    cdef int[::1] dbg_reason = np.zeros(num_lines, dtype=np.int32)
+    cdef double[::1] dbg_zc = np.full(num_lines, NONE_DOUBLE, dtype=np.float64)
+    cdef double[::1] dbg_zc2 = np.full(num_lines, NONE_DOUBLE, dtype=np.float64)
+    cdef double[::1] dbg_pct1_left = np.zeros(num_lines, dtype=np.float64)
+    cdef double[::1] dbg_pct99_left = np.zeros(num_lines, dtype=np.float64)
+    cdef double[::1] dbg_pct1_right = np.zeros(num_lines, dtype=np.float64)
+    cdef double[::1] dbg_pct99_right = np.zeros(num_lines, dtype=np.float64)
+    cdef double[::1] dbg_porch = np.zeros(num_lines, dtype=np.float64)
+    cdef double[::1] dbg_sync = np.zeros(num_lines, dtype=np.float64)
+    cdef double[::1] dbg_right_cross = np.full(num_lines, NONE_DOUBLE, dtype=np.float64)
+    cdef double[::1] dbg_lineloc_orig = np.zeros(num_lines, dtype=np.float64)
+
     with nogil:
-        for i in range(len(linelocs_original)):
+        for i in range(num_lines):
+            dbg_lineloc_orig[i] = linelocs_original[i]
+            
             # skip VSYNC lines, since they handle the pulses differently
             if inrange(i, 3, 6) or (is_pal and inrange(i, 1, 2)):
                 linebad[i] = True
+                dbg_reason[i] = DBG_VSYNC_SKIP
                 continue
 
             # refine beginning of hsync
@@ -1041,6 +1068,7 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                 zc_threshold,
                 count=one_usec * 2,
             )
+            dbg_zc[i] = zc
 
             right_cross = NONE_DOUBLE
             if not disable_right_hsync:
@@ -1050,6 +1078,7 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                     zc_threshold,
                     count=one_usec * 3,
                 )
+            dbg_right_cross[i] = right_cross
             right_cross_refined = False
 
             # If the crossing exists, we can check if the hsync pulse looks normal and
@@ -1064,10 +1093,14 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                 ]
                 pct1_left = c_percentile(hsync_area, 1.0)
                 pct99_left = c_percentile(hsync_area, 99.0)
+                dbg_pct1_left[i] = pct1_left
+                dbg_pct99_left[i] = pct99_left
+                
                 if pct1_left < ire_n_65 or pct99_left > ire_50:
                     # don't use the computed value here if it's bad
                     linebad[i] = True
                     linelocs_refined[i] = linelocs_original[i]
+                    dbg_reason[i] = DBG_PCT_LEFT_OUT_OF_RANGE
                 else:
                     porch_level = c_median(
                         demod_05[round_to_int(zc + (one_usec * 8)) : round_to_int(zc + (one_usec * 9))]
@@ -1075,6 +1108,8 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                     sync_level = c_median(
                         demod_05[round_to_int(zc + (one_usec * 1)) : round_to_int(zc + (one_usec * 2.5))]
                     )
+                    dbg_porch[i] = porch_level
+                    dbg_sync[i] = sync_level
 
                     # Re-calculate the crossing point using the mid point between the measured sync
                     # and porch levels
@@ -1084,15 +1119,19 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                         (porch_level + sync_level) / 2.0,
                         count=400,
                     )
+                    dbg_zc2[i] = zc2
 
                     # any wild variation here indicates a failure
                     # Relaxed threshold (one_usec instead of one_usec/2) for out-of-spec signals with overshoot
                     if not is_none_double(zc2) and c_abs(zc2 - zc) < one_usec:
                         linelocs_refined[i] = zc2
+                        dbg_reason[i] = DBG_REFINED_LEFT
                     else:
                         linebad[i] = True
+                        dbg_reason[i] = DBG_ZC2_FAIL
             else:
                 linebad[i] = True
+                dbg_reason[i] = DBG_NO_ZC
 
             # Check right cross
             if not is_none_double(right_cross):
@@ -1108,6 +1147,8 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
 
                 pct1_right = c_percentile(hsync_area, 1.0)
                 pct99_right = c_percentile(hsync_area, 99.0)
+                dbg_pct1_right[i] = pct1_right
+                dbg_pct99_right[i] = pct99_right
 
                 if pct1_right > ire_n_65 and pct99_right < ire_50:
 
@@ -1134,6 +1175,10 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                     if not is_none_double(zc2) and c_abs(zc2 - right_cross) < one_usec:
                         right_cross = zc2
                         right_cross_refined = True
+                else:
+                    # Track that right cross failed due to percentiles
+                    if dbg_reason[i] != DBG_REFINED_LEFT:
+                        dbg_reason[i] = DBG_RIGHT_PCT_OUT_OF_RANGE
 
             if linebad[i]:
                 linelocs_refined[i] = linelocs_original[
@@ -1146,5 +1191,49 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                 # to be messed up by overshoot.
                 linebad[i] = False
                 linelocs_refined[i] = right_cross - normal_hsync_length + 2.25
+                dbg_reason[i] = DBG_REFINED_RIGHT
+
+    # Debug output after nogil block
+    if debug:
+        reason_names = {
+            0: "UNKNOWN",
+            DBG_VSYNC_SKIP: "VSYNC_SKIP",
+            DBG_NO_ZC: "NO_ZC",
+            DBG_PCT_LEFT_OUT_OF_RANGE: "PCT_LEFT_OOR",
+            DBG_ZC2_FAIL: "ZC2_FAIL",
+            DBG_REFINED_LEFT: "REFINED_LEFT",
+            DBG_REFINED_RIGHT: "REFINED_RIGHT",
+            DBG_RIGHT_PCT_OUT_OF_RANGE: "RIGHT_PCT_OOR",
+            DBG_RIGHT_ZC2_FAIL: "RIGHT_ZC2_FAIL",
+        }
+        
+        # Count failures
+        fail_count = 0
+        for i in range(num_lines):
+            if linebad[i] and dbg_reason[i] != DBG_VSYNC_SKIP:
+                fail_count += 1
+        
+        if fail_count > 0:
+            print(f"\n=== refine_linelocs_hsync DEBUG: {fail_count} lines failed (excl. VSYNC) ===")
+            print(f"    hsync_threshold={hsync_threshold:.1f}, ire_n_65={ire_n_65:.1f}, ire_50={ire_50:.1f}")
+            print(f"    one_usec={one_usec}, normal_hsync_length={normal_hsync_length}")
+            
+            for i in range(num_lines):
+                reason = dbg_reason[i]
+                # Only print failed lines (not VSYNC_SKIP, not successful refinements)
+                if linebad[i] and reason != DBG_VSYNC_SKIP:
+                    zc_str = f"{dbg_zc[i]:.1f}" if not is_none_double(dbg_zc[i]) else "None"
+                    zc2_str = f"{dbg_zc2[i]:.1f}" if not is_none_double(dbg_zc2[i]) else "None"
+                    rc_str = f"{dbg_right_cross[i]:.1f}" if not is_none_double(dbg_right_cross[i]) else "None"
+                    
+                    print(f"  Line {i}: {reason_names.get(reason, reason)}")
+                    print(f"    lineloc_orig={dbg_lineloc_orig[i]:.1f}, zc={zc_str}, zc2={zc2_str}")
+                    print(f"    pct1_left={dbg_pct1_left[i]:.1f}, pct99_left={dbg_pct99_left[i]:.1f}")
+                    print(f"    porch={dbg_porch[i]:.1f}, sync={dbg_sync[i]:.1f}")
+                    print(f"    right_cross={rc_str}, pct1_right={dbg_pct1_right[i]:.1f}, pct99_right={dbg_pct99_right[i]:.1f}")
+                    
+                    # Check if zc2 deviation was the issue
+                    if reason == DBG_ZC2_FAIL and not is_none_double(dbg_zc[i]) and not is_none_double(dbg_zc2[i]):
+                        print(f"    zc2_deviation={abs(dbg_zc2[i] - dbg_zc[i]):.1f} (threshold={one_usec})")
 
     return linelocs_refined

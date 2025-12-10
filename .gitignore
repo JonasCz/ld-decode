@@ -111,3 +111,8 @@ ld_decode.egg-info/
 
 # Compilation script
 compile.bat
+vhsd_rust.cp311-win_amd64.pyd
+vhsdecode/hilbert.cp311-win_amd64.pyd
+vhsdecode/linear_filter.cp311-win_amd64.pyd
+.gitignore
+vhsdecode/sync.cp311-win_amd64.pyd

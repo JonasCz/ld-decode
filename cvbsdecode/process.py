@@ -399,8 +399,9 @@ class FieldPALCVBS(FieldCVBSShared, ldd.FieldPAL):
 
     def refine_linelocs_hsync(self):
         if not self.rf.options.skip_hsync_refine:
+            debug = True
             return sync.refine_linelocs_hsync(
-                self, self.linebad, 0
+                self, self.linebad, 0, debug=debug
             )  # TODO fix last param once it's actually used.
         else:
             return self.linelocs1.copy()

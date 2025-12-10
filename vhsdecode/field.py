@@ -1516,8 +1516,19 @@ class FieldShared:
                 if self.rf.options.hsync_refine_use_threshold
                 else self.rf.iretohz(self.rf.SysParams["vsync_ire"] / 2)
             )
-
-            return sync.refine_linelocs_hsync(self, self.linebad, threshold)
+            debug = True
+            if debug:
+                field_num = getattr(self, 'field_number', -1)
+                print(f"\n--- refine_linelocs_hsync called for field {field_num} ---")
+                print(f"    threshold={threshold:.1f}, sync_confidence={self.sync_confidence}")
+                print(f"    linelocs1 range: {min(self.linelocs1):.1f} - {max(self.linelocs1):.1f}")
+                linebad_count = sum(1 for x in self.linebad if x)
+                print(f"    linebad count before refine: {linebad_count}/{len(self.linebad)}")
+            result = sync.refine_linelocs_hsync(self, self.linebad, threshold, debug=debug)
+            if debug:
+                linebad_count_after = sum(1 for x in self.linebad if x)
+                print(f"    linebad count after refine: {linebad_count_after}/{len(self.linebad)}")
+            return result
         else:
             return self.linelocs1.copy()
 
