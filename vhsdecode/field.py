@@ -1553,6 +1553,7 @@ class FieldShared:
         demod_05 = self.data["video"]["demod_05"]
         one_usec = self.rf.freq
 
+
         for i in range(len(self.linelocs1)):
             # skip VSYNC lines, since they handle the pulses differently
             if inrange(i, 3, 6) or (self.rf.system == "PAL" and inrange(i, 1, 2)):
@@ -1561,8 +1562,8 @@ class FieldShared:
 
             # refine beginning of hsync
 
-            # start looking 1 msec back
-            ll1 = self.linelocs1[i] - one_usec
+            # start looking 2 msec back
+            ll1 = self.linelocs1[i] - one_usec * 2
             # and locate the next time the half point between hsync and 0 is crossed.
             zc = lddu.calczc(
                 demod_05,
@@ -1584,6 +1585,10 @@ class FieldShared:
                 )
             right_cross_refined = False
 
+            # Thresholds for hsync area checks (defined outside conditional for use by both left and right)
+            thresh_low = self.rf.iretohz(-65)
+            thresh_high = self.rf.iretohz(50)
+
             # If the crossing exists, we can check if the hsync pulse looks normal and
             # refine it.
             if zc is not None and not linebad[i]:
@@ -1593,9 +1598,11 @@ class FieldShared:
                 hsync_area = demod_05[
                     int(zc - (one_usec * 0.75)) : int(zc + (one_usec * 8))
                 ]
-                if lddu.nb_min(hsync_area) < self.rf.iretohz(-55) or lddu.nb_max(
-                    hsync_area
-                ) > self.rf.iretohz(30):
+                # percentiles to ignore spikes/ringing/overshoot.
+                pct1_left = np.percentile(hsync_area, 1)
+                pct99_left = np.percentile(hsync_area, 99)
+
+                if pct1_left < thresh_low or pct99_left > thresh_high:
                     # don't use the computed value here if it's bad
                     linebad[i] = True
                     linelocs2[i] = self.linelocs1[i]
@@ -1618,7 +1625,8 @@ class FieldShared:
                     )
 
                     # any wild variation here indicates a failure
-                    if zc2 is not None and np.abs(zc2 - zc) < (one_usec / 2):
+                    # Relaxed threshold (one_usec instead of one_usec/2) for out-of-spec signals with overshoot
+                    if zc2 is not None and np.abs(zc2 - zc) < one_usec:
                         linelocs2[i] = zc2
                     else:
                         linebad[i] = True
@@ -1635,9 +1643,11 @@ class FieldShared:
                 hsync_area = demod_05[
                     int(zc_fr - (one_usec * 0.75)) : int(zc_fr + (one_usec * 8))
                 ]
-                if lddu.nb_min(hsync_area) > self.rf.iretohz(-55) and lddu.nb_max(
-                    hsync_area
-                ) < self.rf.iretohz(30):
+
+                pct1_right = np.percentile(hsync_area, 1)
+                pct99_right = np.percentile(hsync_area, 99)
+
+                if pct1_right > thresh_low and pct99_right < thresh_high:
                     porch_level = lddu.nb_median(
                         demod_05[
                             int(zc_fr + (one_usec * 8)) : int(zc_fr + (one_usec * 9))
@@ -1660,7 +1670,7 @@ class FieldShared:
                     )
 
                     # any wild variation here indicates a failure
-                    if zc2 is not None and np.abs(zc2 - right_cross) < (one_usec / 2):
+                    if zc2 is not None and np.abs(zc2 - right_cross) < one_usec:
                         right_cross = zc2
                         right_cross_refined = True
 

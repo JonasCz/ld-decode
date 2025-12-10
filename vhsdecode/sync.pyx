@@ -89,6 +89,51 @@ cdef bint is_out_of_range(double[::1] data, double min, double max) nogil:
 
 @cython.wraparound(False)
 @cython.boundscheck(False)
+cdef double c_percentile(double[::1] data, double percentile) nogil:
+    """Calculate percentile of data array. Percentile should be 0-100."""
+    cdef Py_ssize_t data_len = len(data)
+    if data_len == 0:
+        return 0.0
+    
+    # Allocate temp buffer and copy data
+    cdef double* temp = <double*>malloc(data_len * sizeof(double))
+    if temp == NULL:
+        return 0.0
+    
+    cdef Py_ssize_t i, j
+    cdef double key
+    
+    # Copy data to temp
+    for i in range(data_len):
+        temp[i] = data[i]
+    
+    # Simple insertion sort (efficient for small arrays ~100 elements)
+    for i in range(1, data_len):
+        key = temp[i]
+        j = i - 1
+        while j >= 0 and temp[j] > key:
+            temp[j + 1] = temp[j]
+            j -= 1
+        temp[j + 1] = key
+    
+    # Calculate percentile index
+    cdef double idx = (percentile / 100.0) * (data_len - 1)
+    cdef Py_ssize_t lower_idx = <Py_ssize_t>idx
+    cdef Py_ssize_t upper_idx = lower_idx + 1
+    cdef double frac = idx - lower_idx
+    cdef double result
+    
+    if upper_idx >= data_len:
+        result = temp[data_len - 1]
+    else:
+        # Linear interpolation
+        result = temp[lower_idx] * (1.0 - frac) + temp[upper_idx] * frac
+    
+    free(temp)
+    return result
+
+@cython.wraparound(False)
+@cython.boundscheck(False)
 cdef Py_ssize_t calczc_findfirst(double[::1] data, double target, bint rising) nogil:
     """Find the index where data first crosses target, in the specified direction.
        returns NONE_INT if no crossing is found.
@@ -956,27 +1001,26 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
     rf = field.rf
     cdef int normal_hsync_length = field.usectoinpx(rf.SysParams["hsyncPulseUS"])
     cdef int one_usec = rf.freq
-    cdef float sample_rate_mhz = rf.freq
     cdef bint is_pal = rf.system == "PAL"
     cdef bint disable_right_hsync = rf.options.disable_right_hsync
     cdef double zc_threshold = hsync_threshold #rf.iretohz(rf.SysParams["vsync_ire"] / 2.0)
-    cdef double ire_30 = rf.iretohz(30)
+    cdef double ire_50 = rf.iretohz(50)
     cdef double ire_n_65 = rf.iretohz(-65)
-    cdef double ire_110 = rf.iretohz(110)
 
     cdef bint right_cross_refined
-    cdef double refined_from_right_lineloc = -1
     cdef double zc_fr
     cdef double porch_level
-    cdef double prev_porch_level = -1
     cdef double sync_level
     cdef int ll1
     cdef Py_ssize_t i
     cdef double[::1] hsync_area
-    cdef double[::1] back_porch
     cdef double zc
     cdef double zc2
     cdef double right_cross
+    cdef double pct1_left
+    cdef double pct99_left
+    cdef double pct1_right
+    cdef double pct99_right
 
     with nogil:
         for i in range(len(linelocs_original)):
@@ -987,8 +1031,8 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
 
             # refine beginning of hsync
 
-            # start looking 1 usec back
-            ll1 = round_to_int(linelocs_original[i]) - one_usec
+            # start looking 2 usec back
+            ll1 = round_to_int(linelocs_original[i]) - one_usec * 2
             # and locate the next time the half point between hsync and 0 is crossed.
             zc = NONE_DOUBLE
             zc = calczc_do(
@@ -1004,8 +1048,7 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                     demod_05,
                     ll1 + (normal_hsync_length) - one_usec,
                     zc_threshold,
-                    count=round_to_int(normal_hsync_length)*2,
-                    edge=1,
+                    count=one_usec * 3,
                 )
             right_cross_refined = False
 
@@ -1014,31 +1057,21 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
             if not is_none_double(zc) and not linebad[i]:
                 linelocs_refined[i] = zc
 
-                # The hsync area, burst, and porches should not leave -50 to 30 IRE (on PAL or NTSC)
-                # TODO: Use correct values for NTSC/PAL here
+                # The hsync area, burst, and porches should not leave -65 to 50 IRE (on PAL or NTSC)
+                # Use percentiles to ignore spikes/ringing/overshoot.
                 hsync_area = demod_05[
-                    round_to_int(zc - (one_usec * 0.75)) : round_to_int(zc + (one_usec * 3.5))
+                    round_to_int(zc - (one_usec * 0.75)) : round_to_int(zc + (one_usec * 8))
                 ]
-                back_porch = demod_05[
-                    round_to_int(zc + one_usec * 3.5) : round_to_int(zc + (one_usec * 8))
-                ]
-                if is_out_of_range(hsync_area, ire_n_65, ire_110): # or is_out_of_range(back_porch, ire_n_65, ire_110):
+                pct1_left = c_percentile(hsync_area, 1.0)
+                pct99_left = c_percentile(hsync_area, 99.0)
+                if pct1_left < ire_n_65 or pct99_left > ire_50:
                     # don't use the computed value here if it's bad
                     linebad[i] = True
                     linelocs_refined[i] = linelocs_original[i]
                 else:
-
-                    if c_max(hsync_area) < ire_30:
-                        porch_level = c_median(
-                            demod_05[round_to_int(zc + (one_usec * 8)) : round_to_int(zc + (one_usec * 9))]
-                        )
-                    else:
-                        if prev_porch_level > 0:
-                            porch_level = prev_porch_level
-                        else:
-                            porch_level = c_median(
-                                demod_05[round_to_int(zc - (one_usec * 1.0)) : round_to_int(zc - (one_usec * 0.5))]
-                            )
+                    porch_level = c_median(
+                        demod_05[round_to_int(zc + (one_usec * 8)) : round_to_int(zc + (one_usec * 9))]
+                    )
                     sync_level = c_median(
                         demod_05[round_to_int(zc + (one_usec * 1)) : round_to_int(zc + (one_usec * 2.5))]
                     )
@@ -1053,30 +1086,11 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                     )
 
                     # any wild variation here indicates a failure
-                    if not is_none_double(zc2) and c_abs(zc2 - zc) < (one_usec / 2.0):
+                    # Relaxed threshold (one_usec instead of one_usec/2) for out-of-spec signals with overshoot
+                    if not is_none_double(zc2) and c_abs(zc2 - zc) < one_usec:
                         linelocs_refined[i] = zc2
-                        prev_porch_level = porch_level
                     else:
-                        # Give up
-                        # front_porch_level = c_median(
-                        #     demod_05[int(zc - (one_usec * 1.0)) : int(zc - (one_usec * 0.5))]
-                        # )
-
-                        if prev_porch_level > 0:
-                            # Try again with a earlier measurement porch.
-                            zc2 = calczc_do(
-                                demod_05,
-                                ll1,
-                                (prev_porch_level + sync_level) / 2.0,
-                                count=400,
-                            )
-                            if not is_none_double(zc2) and c_abs(zc2 - zc) < (one_usec / 2.0):
-                                linelocs_refined[i] = zc2
-                            else:
-                                linebad[i] = True
-                        else:
-                            # Give up
-                            linebad[i] = True
+                        linebad[i] = True
             else:
                 linebad[i] = True
 
@@ -1086,16 +1100,19 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
 
                 zc_fr = right_cross - normal_hsync_length
 
-                # The hsync area, burst, and porches should not leave -50 to 30 IRE (on PAL or NTSC)
-                # NOTE: This is more than hsync area, might wanna also check max levels of level in hsync
+                # The hsync area, burst, and porches should not leave -65 to 50 IRE (on PAL or NTSC)
+                # Use percentiles to ignore spikes/ringing/overshoot.
                 hsync_area = demod_05[
                     round_to_int(zc_fr - (one_usec * 0.75)) : round_to_int(zc_fr + (one_usec * 8))
                 ]
 
-                if not is_out_of_range(hsync_area, ire_n_65, ire_30):
+                pct1_right = c_percentile(hsync_area, 1.0)
+                pct99_right = c_percentile(hsync_area, 99.0)
+
+                if pct1_right > ire_n_65 and pct99_right < ire_50:
 
                     porch_level = c_median(
-                        demod_05[round_to_int(zc_fr + normal_hsync_length + (one_usec * 1)) : round_to_int(zc_fr + normal_hsync_length + (one_usec * 2))]
+                        demod_05[round_to_int(zc_fr + (one_usec * 8)) : round_to_int(zc_fr + (one_usec * 9))]
                     )
 
                     sync_level = c_median(
@@ -1114,16 +1131,9 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                     )
 
                     # any wild variation here indicates a failure
-                    if not is_none_double(zc2) and c_abs(zc2 - right_cross) < (one_usec / 2.0):
-                        # TODO: Magic value here, this seem to give be approximately correct results
-                        # but may not be ideal for all inputs.
-                        # Value based on default sample rate so scale if it's different.
-                        refined_from_right_lineloc = right_cross - normal_hsync_length + (2.25 * (sample_rate_mhz / 40.0))
-                        # Don't use if it deviates too much which could indicate a false positive or non-standard hsync length.
-                        if c_abs(refined_from_right_lineloc - linelocs_refined[i]) < (one_usec * 2):
-                            right_cross = zc2
-                            right_cross_refined = True
-                            prev_porch_level = porch_level
+                    if not is_none_double(zc2) and c_abs(zc2 - right_cross) < one_usec:
+                        right_cross = zc2
+                        right_cross_refined = True
 
             if linebad[i]:
                 linelocs_refined[i] = linelocs_original[
@@ -1135,6 +1145,6 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                 # right side of the hsync pulse, we use that as it's less likely
                 # to be messed up by overshoot.
                 linebad[i] = False
-                linelocs_refined[i] = refined_from_right_lineloc
+                linelocs_refined[i] = right_cross - normal_hsync_length + 2.25
 
     return linelocs_refined
