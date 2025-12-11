@@ -34,6 +34,11 @@ def check_levels(data, old_sync, new_sync, new_blank, vsync_hz_ref, hz_ire, full
 
     # ldd.logger.info("ire diff: %s", blank_sync_ire_diff)
 
+    # Check if sync is above or too close to blank - sync should be at least 15 IRE below blank
+    # (normal is ~40 IRE for PAL/NTSC)
+    if blank_sync_ire_diff < 15:
+        return False
+
     # Check if too far below format's standard sync, or the difference between sync and blank is too large
     # to make sense
     if (vsync_hz_ref - new_sync) > (hz_ire * 15) or blank_sync_ire_diff > 47:
@@ -417,10 +422,11 @@ class Resync:
             synclevel = self._field_state.pull_sync_level()
             if synclevel is None:
                 return None, None
+            vsync_locs_from_field = True
         else:
             synclevel = np.median(vsync_means)
-            self._field_state.set_sync_level(synclevel)
-            self._field_state.set_locs(vsync_locs)
+            vsync_locs_from_field = False
+            # Note: we defer storing sync level until after validation
 
         # TODO: Think this was a bug - need to use absolute locs here,
         # not position in pulse list
@@ -473,20 +479,33 @@ class Resync:
             # Make sure these levels are sane before using them.
             # Also don't save if we only found 1 or 2 vsyncs in case
             # they were false positives.
-            if (
-                self.level_check(
-                    field.rf.sysparams_const,
-                    synclevel,
-                    blacklevel,
-                    field.data["video"]["demod_05"],
-                    True,
-                )
-                and len(vsync_means) > 3
-            ):
+            sp = field.rf.sysparams_const
+            level_ok = self.level_check(
+                sp,
+                synclevel,
+                blacklevel,
+                field.data["video"]["demod_05"],
+                True,
+            )
+            if level_ok and len(vsync_means) > 3:
                 if store_in_field_state:
+                    # set_levels stores both sync and blank (it calls set_sync_level internally)
                     self._field_state.set_levels(synclevel, blacklevel)
+                elif not vsync_locs_from_field:
+                    # Only store sync level separately if we're not storing both levels
+                    self._field_state.set_sync_level(synclevel)
+                # Store vsync locations if we detected them fresh
+                if not vsync_locs_from_field:
+                    self._field_state.set_locs(vsync_locs)
             else:
-                ldd.logger.debug("level check failed in pulses_levels!")
+                sync_ire = hztoire(sp, synclevel)
+                blank_ire = hztoire(sp, blacklevel)
+                diff_ire = blank_ire - sync_ire
+                ldd.logger.debug(
+                    f"level check failed in pulses_levels: sync={synclevel:.0f} ({sync_ire:.1f} IRE), "
+                    f"blank={blacklevel:.0f} ({blank_ire:.1f} IRE), diff={diff_ire:.1f} IRE, "
+                    f"vsync_count={len(vsync_means)}, level_ok={level_ok}"
+                )
                 return None, None
 
         return synclevel, blacklevel
@@ -739,8 +758,8 @@ class Resync:
                         "Level check failed on serration measured levels, using defaults."
                     )
                     levels_source = "defaults (serration check failed, no field_state)"
-                    sync = sp.ire0
-                    blank = sp.vsync_hz
+                    sync = sp.vsync_hz
+                    blank = sp.ire0
             else:
                 sync, blank = self._field_state.pull_levels()
                 levels_source = "field_state"
@@ -800,10 +819,6 @@ class Resync:
         # Print if threshold changed significantly or is abnormal
         threshold_change = abs(pulse_hz_max - old_threshold)
         # Normal threshold should be around -20 IRE (midpoint of -40 sync and 0 blank)
-        if threshold_change > 10000 or threshold_ire > -10:
-            print(f"  !!! THRESHOLD DEBUG: source={levels_source}")
-            print(f"      sync={sync:.0f} ({sync_ire:.1f} IRE), blank={blank:.0f} ({blank_ire:.1f} IRE)")
-            print(f"      pulse_hz_max={pulse_hz_max:.0f} ({threshold_ire:.1f} IRE)")
-            print(f"      old_threshold={old_threshold:.0f}, change={threshold_change:.0f}")
+        print(f"Resync: source={levels_source}, sync={sync:.0f} ({sync_ire:.1f} IRE), blank={blank:.0f} ({blank_ire:.1f} IRE), threshold={pulse_hz_max:.0f} ({threshold_ire:.1f} IRE)")
 
         return self.findpulses(field.data["video"]["demod_05"], pulse_hz_max)
