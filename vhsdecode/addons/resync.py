@@ -819,6 +819,6 @@ class Resync:
         # Print if threshold changed significantly or is abnormal
         threshold_change = abs(pulse_hz_max - old_threshold)
         # Normal threshold should be around -20 IRE (midpoint of -40 sync and 0 blank)
-        print(f"Resync: source={levels_source}, sync={sync:.0f} ({sync_ire:.1f} IRE), blank={blank:.0f} ({blank_ire:.1f} IRE), threshold={pulse_hz_max:.0f} ({threshold_ire:.1f} IRE)")
+        #print(f"Resync: source={levels_source}, sync={sync:.0f} ({sync_ire:.1f} IRE), blank={blank:.0f} ({blank_ire:.1f} IRE), threshold={pulse_hz_max:.0f} ({threshold_ire:.1f} IRE)")
 
         return self.findpulses(field.data["video"]["demod_05"], pulse_hz_max)

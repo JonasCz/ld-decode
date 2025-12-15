@@ -1516,29 +1516,29 @@ class FieldShared:
                 if self.rf.options.hsync_refine_use_threshold
                 else self.rf.iretohz(self.rf.SysParams["vsync_ire"] / 2)
             )
-            # debug = True
-            # if debug:
-            #     field_num = getattr(self, 'field_number', -1)
-            #     print(f"\n--- refine_linelocs_hsync called for field {field_num} ---")
-            #     # Debug IRE conversion parameters - iretohz uses DecoderParams by default!
-            #     vsync_ire = self.rf.SysParams["vsync_ire"]
-            #     sys_ire0 = self.rf.SysParams.get("ire0", "N/A")
-            #     sys_hz_ire = self.rf.SysParams.get("hz_ire", "N/A")
-            #     dec_ire0 = self.rf.DecoderParams.get("ire0", "N/A")
-            #     dec_hz_ire = self.rf.DecoderParams.get("hz_ire", "N/A")
-            #     computed_thresh = self.rf.iretohz(vsync_ire / 2)
-            #     print(f"    SysParams: vsync_ire={vsync_ire}, ire0={sys_ire0}, hz_ire={sys_hz_ire}")
-            #     print(f"    DecoderParams: ire0={dec_ire0}, hz_ire={dec_hz_ire}")
-            #     print(f"    iretohz uses DecoderParams! iretohz(0)={self.rf.iretohz(0):.1f}, iretohz(-40)={self.rf.iretohz(-40):.1f}")
-            #     print(f"    last_pulse_threshold={self.rf.resync.last_pulse_threshold:.1f}")
-            #     print(f"    threshold={threshold:.1f}, sync_confidence={self.sync_confidence}")
-            #     print(f"    linelocs1 range: {min(self.linelocs1):.1f} - {max(self.linelocs1):.1f}")
-            #     linebad_count = sum(1 for x in self.linebad if x)
-            #     print(f"    linebad count before refine: {linebad_count}/{len(self.linebad)}")
-            result = sync.refine_linelocs_hsync(self, self.linebad, threshold)
-            # if debug:
-            #     linebad_count_after = sum(1 for x in self.linebad if x)
-            #     print(f"    linebad count after refine: {linebad_count_after}/{len(self.linebad)}")
+            debug = False
+            if debug:
+                field_num = getattr(self, 'field_number', -1)
+                print(f"\n--- refine_linelocs_hsync called for field {field_num} ---")
+                # Debug IRE conversion parameters - iretohz uses DecoderParams by default!
+                vsync_ire = self.rf.SysParams["vsync_ire"]
+                sys_ire0 = self.rf.SysParams.get("ire0", "N/A")
+                sys_hz_ire = self.rf.SysParams.get("hz_ire", "N/A")
+                dec_ire0 = self.rf.DecoderParams.get("ire0", "N/A")
+                dec_hz_ire = self.rf.DecoderParams.get("hz_ire", "N/A")
+                computed_thresh = self.rf.iretohz(vsync_ire / 2)
+                print(f"    SysParams: vsync_ire={vsync_ire}, ire0={sys_ire0}, hz_ire={sys_hz_ire}")
+                print(f"    DecoderParams: ire0={dec_ire0}, hz_ire={dec_hz_ire}")
+                print(f"    iretohz uses DecoderParams! iretohz(0)={self.rf.iretohz(0):.1f}, iretohz(-40)={self.rf.iretohz(-40):.1f}")
+                print(f"    last_pulse_threshold={self.rf.resync.last_pulse_threshold:.1f}")
+                print(f"    threshold={threshold:.1f}, sync_confidence={self.sync_confidence}")
+                print(f"    linelocs1 range: {min(self.linelocs1):.1f} - {max(self.linelocs1):.1f}")
+                linebad_count = sum(1 for x in self.linebad if x)
+                print(f"    linebad count before refine: {linebad_count}/{len(self.linebad)}")
+            result = sync.refine_linelocs_hsync(self, self.linebad, threshold, False)
+            if debug:
+                linebad_count_after = sum(1 for x in self.linebad if x)
+                print(f"    linebad count after refine: {linebad_count_after}/{len(self.linebad)}")
             return result
         else:
             return self.linelocs1.copy()

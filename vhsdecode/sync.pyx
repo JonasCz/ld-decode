@@ -1058,23 +1058,24 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
 
             # refine beginning of hsync
 
-            # start looking 2 usec back
-            ll1 = round_to_int(linelocs_original[i]) - one_usec * 2
+            # start looking 4 usec back (expanded from 2 usec for better sync finding)
+            ll1 = round_to_int(linelocs_original[i]) - one_usec * 4
             # and locate the next time the half point between hsync and 0 is crossed.
             zc = NONE_DOUBLE
             zc = calczc_do(
                 demod_05,
                 ll1,
                 zc_threshold,
-                count=one_usec * 2,
+                count=one_usec * 4,  # expanded from 2 usec
             )
             dbg_zc[i] = zc
 
             right_cross = NONE_DOUBLE
             if not disable_right_hsync:
+                # Use original line location for right cross (not ll1 which was moved back)
                 right_cross = calczc_do(
                     demod_05,
-                    ll1 + (normal_hsync_length) - one_usec,
+                    round_to_int(linelocs_original[i]) + (normal_hsync_length) - one_usec,
                     zc_threshold,
                     count=one_usec * 3,
                 )
@@ -1166,7 +1167,7 @@ def refine_linelocs_hsync(field, stdint.uint8_t[::1] linebad, double hsync_thres
                     # and porch levels
                     zc2 = calczc_do(
                         demod_05,
-                        ll1 + normal_hsync_length - one_usec,
+                        round_to_int(linelocs_original[i]) + normal_hsync_length - one_usec,
                         (porch_level + sync_level) / 2.0,
                         count=400,
                     )
